@@ -49,6 +49,9 @@ Ticker dyskinesiaBlinkTicker;
 
 float currentTremorEnergy = 0.0f;
 float currentDyskinesiaEnergy = 0.0f;
+float currentFreezeIndex = 0.0f;
+bool isFreezing = false;
+
 
 FileHandle *mbed::mbed_override_console(int)
 {
@@ -202,6 +205,27 @@ float band_energy(const float *mag, float freq_low, float freq_high)
     return total_energy;
 }
 
+
+float compute_freeze_index()
+{
+    // Total acceleration magnitude spectrum
+    static float magAccTotal[BUFFER_SIZE / 2];
+
+    for (int i = 0; i < BUFFER_SIZE/2; i++)
+        magAccTotal[i] = magAccX[i] + magAccY[i] + magAccZ[i];
+
+    // Freezing band: 3–8 Hz (freeze band)
+    float freeze_band = band_energy(magAccTotal, 3.0f, 8.0f);
+
+    // Locomotor band: 0.5–3 Hz
+    float loco_band = band_energy(magAccTotal, 0.5f, 3.0f);
+
+    if (loco_band < 1e-6f)  // avoid division by zero
+        return 0.0f;
+
+    return freeze_band / loco_band;
+}
+
 float dominant_frequency()
 {
     float sampling_period_s = SAMPLE_INTERVAL_US * 1e-6f;
@@ -253,9 +277,18 @@ void print_result()
 
     bool isDyskinesia = (E5_7_acc > ACC_DYS_TH) && (E5_7_gyro > GYRO_DYS_TH) &&
                         (dom_freq >= 5.0f && dom_freq <= 7.0f);
-    bool isTremor = !isDyskinesia &&
-                    (E3_5_acc > ACC_TREMOR_TH) && (E3_5_gyro > GYRO_TREMOR_TH) &&
-                    (dom_freq >= 3.0f && dom_freq <= 5.0f);
+    bool isTremor = (E3_5_acc > ACC_TREMOR_TH) && (E3_5_gyro > GYRO_TREMOR_TH) &&
+                (dom_freq >= 3.0f && dom_freq <= 5.0f);
+
+
+    float freezeIndex = compute_freeze_index();
+currentFreezeIndex = freezeIndex;
+
+// Threshold typically ≈ 2.0
+isFreezing = (freezeIndex > 2.0f);
+
+printf("Freeze Index (FI) = %.3f\r\n", freezeIndex);
+printf("Is Freezing of Gait Detected: %s\r\n", isFreezing ? "true" : "false");
 
     printf("Is the accelerometer and the gyroscope energy higher than the threshold value in the 5-7 Hz band: %s\r\n", isDyskinesia ? "true" : "false");
     printf("Is the accelerometer and the gyroscope energy higher than the threshold value in the 3-5 Hz band: %s\r\n", isTremor ? "true" : "false");
@@ -266,12 +299,10 @@ void print_result()
 
     update_led_blinking();
 
-    if (isDyskinesia)
-        printf("THIS BATCH: DYSKINESIA\r\n");
-    else if (isTremor)
-        printf("THIS BATCH: Tremor\r\n");
-    else
-        printf("THIS BATCH: NORMAL\r\n");
+  printf("THIS BATCH: Tremor: %s, Dyskinesia: %s, Freezing: %s\r\n",
+       isTremor ? "Yes" : "No",
+       isDyskinesia ? "Yes" : "No",
+       isFreezing ? "Yes" : "No");
 }
 
 void sample_isr()
