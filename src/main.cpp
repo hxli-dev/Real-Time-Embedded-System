@@ -14,6 +14,7 @@ Thread worker;
 
 DigitalOut tremorLed(LED3);
 DigitalOut dyskinesiaLed(LED1);
+DigitalOut freezeLed(LED2);
 
 volatile bool isReading = false;
 volatile bool batchReady = false;
@@ -46,6 +47,8 @@ float gyroZ_g[BUFFER_SIZE];
 
 Ticker tremorBlinkTicker;
 Ticker dyskinesiaBlinkTicker;
+
+Ticker freezeBlinkTicker;
 
 float currentTremorEnergy = 0.0f;
 float currentDyskinesiaEnergy = 0.0f;
@@ -89,17 +92,23 @@ void blink_dyskinesia_led()
     dyskinesiaLed = !dyskinesiaLed;
 }
 
+void blink_freeze_led()
+{
+    freezeLed = !freezeLed;
+}
+
+
 void update_led_blinking()
 {
-    float tremor_interval_ms = 500.0f - currentTremorEnergy * 300.0f;
-    float dyskinesia_interval_ms = 500.0f - powf(currentDyskinesiaEnergy, 1.5f) * 600.0f;
 
+    float tremor_interval_ms = 500.0f - currentTremorEnergy * 300.0f;
     tremor_interval_ms = std::max(100.0f, std::min(tremor_interval_ms, 500.0f));
-    dyskinesia_interval_ms = std::max(100.0f, std::min(dyskinesia_interval_ms, 500.0f));
 
     if (currentTremorEnergy > 0.0f)
     {
-        tremorBlinkTicker.attach(blink_tremor_led, std::chrono::milliseconds((int)tremor_interval_ms));
+        tremorBlinkTicker.attach(
+            blink_tremor_led,
+            std::chrono::milliseconds((int)tremor_interval_ms));
     }
     else
     {
@@ -107,16 +116,44 @@ void update_led_blinking()
         tremorLed = 0;
     }
 
+
+    float dyskinesia_interval_ms = 500.0f - powf(currentDyskinesiaEnergy, 1.5f) * 600.0f;
+    dyskinesia_interval_ms = std::max(100.0f, std::min(dyskinesia_interval_ms, 500.0f));
+
     if (currentDyskinesiaEnergy > 0.0f)
     {
-        dyskinesiaBlinkTicker.attach(blink_dyskinesia_led, std::chrono::milliseconds((int)dyskinesia_interval_ms));
+        dyskinesiaBlinkTicker.attach(
+            blink_dyskinesia_led,
+            std::chrono::milliseconds((int)dyskinesia_interval_ms));
     }
     else
     {
         dyskinesiaBlinkTicker.detach();
         dyskinesiaLed = 0;
     }
+
+
+    if (currentFreezeIndex < 1.0f)
+    {
+        freezeBlinkTicker.detach();
+        freezeLed = 0;
+    }
+    else if (currentFreezeIndex <= 2.0f)
+    {
+
+        freezeBlinkTicker.attach(
+            blink_freeze_led,
+            std::chrono::milliseconds(700));
+    }
+    else
+    {
+   
+        freezeBlinkTicker.attach(
+            blink_freeze_led,
+            std::chrono::milliseconds(200));
+    }
 }
+
 
 float *get_acc_g()
 {
@@ -299,10 +336,18 @@ printf("Is Freezing of Gait Detected: %s\r\n", isFreezing ? "true" : "false");
 
     update_led_blinking();
 
-  printf("THIS BATCH: Tremor: %s, Dyskinesia: %s, Freezing: %s\r\n",
+    printf("THIS BATCH: Tremor: %s, Dyskinesia: %s, Freezing: %s\r\n",
        isTremor ? "Yes" : "No",
        isDyskinesia ? "Yes" : "No",
        isFreezing ? "Yes" : "No");
+
+    printf("DATA,%.3f,%.3f,%.3f,%d,%d,%d\r\n",
+           currentTremorEnergy,
+           currentDyskinesiaEnergy,
+           currentFreezeIndex,
+           isTremor ? 1 : 0,
+           isDyskinesia ? 1 : 0,
+           isFreezing ? 1 : 0);
 }
 
 void sample_isr()
