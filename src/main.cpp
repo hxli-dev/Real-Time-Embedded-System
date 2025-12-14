@@ -4,6 +4,11 @@
 #include "sensor_interface.h"
 #include "fft_processing.h"
 #include "motion_detection.h"
+#include "ble/BLE.h"
+#include "ble/GattServer.h"
+#include "ble/Gap.h"
+
+
 
 BufferedSerial serial_port(USBTX, USBRX, 115200);
 I2C i2c(PB_11, PB_10);
@@ -14,16 +19,18 @@ Thread worker;
 
 DigitalOut tremorLed(LED3);
 DigitalOut dyskinesiaLed(LED1);
-DigitalOut freezeLed(LED2);
+DigitalOut freezeLed(LED2); // Assuming LED2 is Freeze LED
 
 volatile bool isReading = false;
 volatile bool batchReady = false;
 
+// FFT Instantiation
 arm_rfft_fast_instance_f32 fftInst;
 float fftOut[BUFFER_SIZE];
 
 int circular_idx = 0;
 
+// Sensor Data Arrays (Time Domain)
 float accX_time[BUFFER_SIZE];
 float accY_time[BUFFER_SIZE];
 float accZ_time[BUFFER_SIZE];
@@ -31,6 +38,7 @@ float gyroX_time[BUFFER_SIZE];
 float gyroY_time[BUFFER_SIZE];
 float gyroZ_time[BUFFER_SIZE];
 
+// Sensor Data Arrays (Frequency Domain Magnitude)
 float magAccX[BUFFER_SIZE / 2];
 float magAccY[BUFFER_SIZE / 2];
 float magAccZ[BUFFER_SIZE / 2];
@@ -38,6 +46,7 @@ float magGyroX[BUFFER_SIZE / 2];
 float magGyroY[BUFFER_SIZE / 2];
 float magGyroZ[BUFFER_SIZE / 2];
 
+// Sensor Data Arrays (Raw G-force/DPS)
 float accX_g[BUFFER_SIZE];
 float accY_g[BUFFER_SIZE];
 float accZ_g[BUFFER_SIZE];
@@ -47,13 +56,19 @@ float gyroZ_g[BUFFER_SIZE];
 
 Ticker tremorBlinkTicker;
 Ticker dyskinesiaBlinkTicker;
-
 Ticker freezeBlinkTicker;
 
+// Detection State Variables
 float currentTremorEnergy = 0.0f;
 float currentDyskinesiaEnergy = 0.0f;
 float currentFreezeIndex = 0.0f;
 bool isFreezing = false;
+
+// NEW: BLE Instantiations
+BLE &ble_interface = BLE::Instance();
+GattCharacteristic *p_status_characteristic = NULL;
+uint8_t BLE_status = 0; // 0: Normal, 1: Tremor, 2: Dyskinesia, 3: Freeze
+
 
 
 FileHandle *mbed::mbed_override_console(int)
@@ -82,72 +97,45 @@ int16_t read_16bit_value(uint8_t low_reg, uint8_t high_reg)
     return (int16_t)((high << 8) | low);
 }
 
-void blink_tremor_led()
-{
-    tremorLed = !tremorLed;
-}
-
-void blink_dyskinesia_led()
-{
-    dyskinesiaLed = !dyskinesiaLed;
-}
-
-void blink_freeze_led()
-{
-    freezeLed = !freezeLed;
-}
-
+// ... LED blinking functions remain the same ...
+void blink_tremor_led() { tremorLed = !tremorLed; }
+void blink_dyskinesia_led() { dyskinesiaLed = !dyskinesiaLed; }
+void blink_freeze_led() { freezeLed = !freezeLed; }
 
 void update_led_blinking()
 {
-
     float tremor_interval_ms = 500.0f - currentTremorEnergy * 300.0f;
     tremor_interval_ms = std::max(100.0f, std::min(tremor_interval_ms, 500.0f));
 
-    if (currentTremorEnergy > 0.0f)
-    {
+    if (currentTremorEnergy > 0.0f) {
         tremorBlinkTicker.attach(
             blink_tremor_led,
             std::chrono::milliseconds((int)tremor_interval_ms));
-    }
-    else
-    {
+    } else {
         tremorBlinkTicker.detach();
         tremorLed = 0;
     }
 
-
     float dyskinesia_interval_ms = 500.0f - powf(currentDyskinesiaEnergy, 1.5f) * 600.0f;
     dyskinesia_interval_ms = std::max(100.0f, std::min(dyskinesia_interval_ms, 500.0f));
 
-    if (currentDyskinesiaEnergy > 0.0f)
-    {
+    if (currentDyskinesiaEnergy > 0.0f) {
         dyskinesiaBlinkTicker.attach(
             blink_dyskinesia_led,
             std::chrono::milliseconds((int)dyskinesia_interval_ms));
-    }
-    else
-    {
+    } else {
         dyskinesiaBlinkTicker.detach();
         dyskinesiaLed = 0;
     }
 
-
-    if (currentFreezeIndex < 1.0f)
-    {
+    if (currentFreezeIndex < 1.0f) {
         freezeBlinkTicker.detach();
         freezeLed = 0;
-    }
-    else if (currentFreezeIndex <= 2.0f)
-    {
-
+    } else if (currentFreezeIndex <= 2.0f) {
         freezeBlinkTicker.attach(
             blink_freeze_led,
             std::chrono::milliseconds(700));
-    }
-    else
-    {
-   
+    } else {
         freezeBlinkTicker.attach(
             blink_freeze_led,
             std::chrono::milliseconds(200));
@@ -172,6 +160,9 @@ float *get_gyro_g()
     gyro[2] = read_16bit_value(OUTZ_L_G, OUTZ_H_G) * GYRO_SENSITIVITY;
     return gyro;
 }
+
+
+
 
 void fft_init()
 {
@@ -242,7 +233,6 @@ float band_energy(const float *mag, float freq_low, float freq_high)
     return total_energy;
 }
 
-
 float compute_freeze_index()
 {
     // Total acceleration magnitude spectrum
@@ -273,7 +263,7 @@ float dominant_frequency()
     for (int bin = 0; bin < BUFFER_SIZE / 2; bin++)
     {
         combined_mag[bin] = magAccX[bin] + magAccY[bin] + magAccZ[bin] +
-                            magGyroX[bin] + magGyroY[bin] + magGyroZ[bin];
+                             magGyroX[bin] + magGyroY[bin] + magGyroZ[bin];
     }
 
     int bin_start = static_cast<int>(1.0f / freq_resolution);
@@ -293,6 +283,71 @@ float dominant_frequency()
 
     return dominant_bin * freq_resolution;
 }
+
+
+
+// Function to route BLE stack events to the Mbed EventQueue
+void schedule_ble_events(BLE::OnEventsToProcess &event) {
+    queue.call(mbed::callback(&event, &BLE::process));
+}
+
+// Function to send the BLE notification
+void send_BLE_notification() {
+    if (ble_interface.gap().getState().connected && p_status_characteristic) {
+        // Update the characteristic value and send a notification to the central device
+        ble_interface.gattServer().write(
+            p_status_characteristic->getValueHandle(), 
+            &BLE_status, 
+            sizeof(BLE_status)
+        );
+    }
+}
+
+// Function executed once BLE initialization is complete
+void on_ble_init_complete(BLE::InitializationCompleteCallbackContext *context) {
+    if (context->error) {
+        printf("BLE initialization failed: %d\r\n", context->error);
+        return;
+    }
+
+    printf("BLE initialized. Setting up services...\r\n");
+
+    // 1. Define the characteristic (Read, Notify properties)
+    p_status_characteristic = new ReadWriteNotifyGattCharacteristic<uint8_t>(
+        STATUS_CHAR_UUID,
+        &BLE_status,
+        GattCharacteristic::Properties_t::NOTIFY | 
+        GattCharacteristic::Properties_t::READ
+    );
+    
+    // 2. Define the service
+    GattCharacteristic *charTable[] = {p_status_characteristic};
+    GattService parkinsons_service(PARKINSONS_SERVICE_UUID, charTable, 1);
+    
+    // 3. Add the service to the GATT server
+    ble_interface.gattServer().addService(parkinsons_service);
+
+    // 4. Set Advertising Parameters
+    ble_interface.gap().setAdvertisingParameters(
+        GapAdvertisingParams(
+            GapAdvertisingParams::ADVERTISING_FAST, 
+            GapAdvertisingParams::ADV_INTERVAL_MIN, 
+            GapAdvertisingParams::ADV_DURATION_INFINITE
+        )
+    );
+    
+    // 5. Set Advertising Data (Device Name)
+    GapAdvertisingData adv_data;
+    adv_data.setFlags(GapAdvertisingData::LE_GENERAL_DISCOVERABLE | GapAdvertisingData::BREDR_NOT_SUPPORTED);
+    adv_data.setLocalName("ParkinsonsMonitor");
+    ble_interface.gap().setAdvertisingData(adv_data);
+    
+    // 6. Start Advertising
+    ble_interface.gap().startAdvertising();
+    printf("Advertising started. Connect to 'ParkinsonsMonitor'\r\n");
+}
+
+
 
 void print_result()
 {
@@ -315,18 +370,26 @@ void print_result()
     bool isDyskinesia = (E5_7_acc > ACC_DYS_TH) && (E5_7_gyro > GYRO_DYS_TH) &&
                         (dom_freq >= 5.0f && dom_freq <= 7.0f);
     bool isTremor = (E3_5_acc > ACC_TREMOR_TH) && (E3_5_gyro > GYRO_TREMOR_TH) &&
-                (dom_freq >= 3.0f && dom_freq <= 5.0f);
-
+                    (dom_freq >= 3.0f && dom_freq <= 5.0f);
 
     float freezeIndex = compute_freeze_index();
-currentFreezeIndex = freezeIndex;
+    currentFreezeIndex = freezeIndex;
 
-// Threshold typically ≈ 2.0
-isFreezing = (freezeIndex > 2.0f);
+    // Threshold typically ≈ 2.0
+    isFreezing = (freezeIndex > 2.0f);
 
-printf("Freeze Index (FI) = %.3f\r\n", freezeIndex);
-printf("Is Freezing of Gait Detected: %s\r\n", isFreezing ? "true" : "false");
+    if (isFreezing) {
+        BLE_status = 3; // FOG
+    } else if (isTremor) {
+        BLE_status = 1; // Tremor
+    } else if (isDyskinesia) {
+        BLE_status = 2; // Dyskinesia
+    } else {
+        BLE_status = 0; // Normal
+    }
 
+    printf("Freeze Index (FI) = %.3f\r\n", freezeIndex);
+    printf("Is Freezing of Gait Detected: %s\r\n", isFreezing ? "true" : "false");
     printf("Is the accelerometer and the gyroscope energy higher than the threshold value in the 5-7 Hz band: %s\r\n", isDyskinesia ? "true" : "false");
     printf("Is the accelerometer and the gyroscope energy higher than the threshold value in the 3-5 Hz band: %s\r\n", isTremor ? "true" : "false");
     printf("Dominant frequency: %.2f Hz\r\n", dom_freq);
@@ -335,20 +398,25 @@ printf("Is Freezing of Gait Detected: %s\r\n", isFreezing ? "true" : "false");
     currentDyskinesiaEnergy = isDyskinesia ? E5_7_acc + E5_7_gyro : 0.0f;
 
     update_led_blinking();
+    
+    send_BLE_notification();
+    // ----------------------------------
 
     printf("THIS BATCH: Tremor: %s, Dyskinesia: %s, Freezing: %s\r\n",
-       isTremor ? "Yes" : "No",
-       isDyskinesia ? "Yes" : "No",
-       isFreezing ? "Yes" : "No");
+        isTremor ? "Yes" : "No",
+        isDyskinesia ? "Yes" : "No",
+        isFreezing ? "Yes" : "No");
 
     printf("DATA,%.3f,%.3f,%.3f,%d,%d,%d\r\n",
-           currentTremorEnergy,
-           currentDyskinesiaEnergy,
-           currentFreezeIndex,
-           isTremor ? 1 : 0,
-           isDyskinesia ? 1 : 0,
-           isFreezing ? 1 : 0);
+        currentTremorEnergy,
+        currentDyskinesiaEnergy,
+        currentFreezeIndex,
+        isTremor ? 1 : 0,
+        isDyskinesia ? 1 : 0,
+        isFreezing ? 1 : 0);
 }
+
+
 
 void sample_isr()
 {
@@ -371,13 +439,24 @@ void sample_isr()
         } });
 }
 
+
+
 int main()
 {
     dyskinesiaLed = 0;
     tremorLed = 0;
+    freezeLed = 0; // Initialize freeze LED
 
     fft_init();
+    
     worker.start(callback(&queue, &EventQueue::dispatch_forever));
+    
+    ble_interface.onEventsToProcess(schedule_ble_events);
+    ble_interface.init(on_ble_init_complete);
+    
+    ThisThread::sleep_for(2000ms); 
+    printf("BLE initial setup complete.\r\n");
+    // -------------------------------------------------------------
 
     i2c.frequency(400000);
 
@@ -405,7 +484,7 @@ int main()
             tremorLed = 0;
             dyskinesiaLed = 0;
             compute_fft(circular_idx);
-            print_result();
+            print_result(); 
             batchReady = false;
             printf("\nSampling data for 3 seconds...\r\n");
         }
