@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
 
-SERIAL_PORT = "/dev/cu.usbmodem2103"   
+SERIAL_PORT = "/dev/cu.usbmodem103"   
 BAUD_RATE = 115200
 
 

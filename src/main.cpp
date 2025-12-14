@@ -4,6 +4,8 @@
 #include "sensor_interface.h"
 #include "fft_processing.h"
 #include "motion_detection.h"
+#include "ble_rtes.h"
+
 
 BufferedSerial serial_port(USBTX, USBRX, 115200);
 I2C i2c(PB_11, PB_10);
@@ -348,6 +350,10 @@ printf("Is Freezing of Gait Detected: %s\r\n", isFreezing ? "true" : "false");
            isTremor ? 1 : 0,
            isDyskinesia ? 1 : 0,
            isFreezing ? 1 : 0);
+
+    rtes_ble::update(isTremor, isDyskinesia, isFreezing,
+                 currentTremorEnergy, currentDyskinesiaEnergy, currentFreezeIndex);
+
 }
 
 void sample_isr()
@@ -378,6 +384,8 @@ int main()
 
     fft_init();
     worker.start(callback(&queue, &EventQueue::dispatch_forever));
+    rtes_ble::start();
+
 
     i2c.frequency(400000);
 
