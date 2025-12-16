@@ -298,12 +298,12 @@ float dominant_frequency()
 
 void print_result()
 {
-    float E5_7_acc = band_energy(magAccX, 5.0f, 7.0f) +
-                     band_energy(magAccY, 5.0f, 7.0f) +
-                     band_energy(magAccZ, 5.0f, 7.0f);
-    float E5_7_gyro = band_energy(magGyroX, 5.0f, 7.0f) +
-                      band_energy(magGyroY, 5.0f, 7.0f) +
-                      band_energy(magGyroZ, 5.0f, 7.0f);
+    float E5_7_acc = band_energy(magAccX, 4.0f, 6.0f) +
+                     band_energy(magAccY, 4.0f, 6.0f) +
+                     band_energy(magAccZ, 4.0f, 6.0f);
+    float E5_7_gyro = band_energy(magGyroX, 4.0f, 6.0f) +
+                      band_energy(magGyroY, 4.0f, 6.0f) +
+                      band_energy(magGyroZ, 4.0f, 6.0f);
 
     float E3_5_acc = band_energy(magAccX, 3.0f, 5.0f) +
                      band_energy(magAccY, 3.0f, 5.0f) +
@@ -315,7 +315,7 @@ void print_result()
     float dom_freq = dominant_frequency();
 
     bool isDyskinesia = (E5_7_acc > ACC_DYS_TH) && (E5_7_gyro > GYRO_DYS_TH) &&
-                        (dom_freq >= 5.0f && dom_freq <= 7.0f);
+                        (dom_freq >= 4.0f && dom_freq <= 6.0f);
     bool isTremor = (E3_5_acc > ACC_TREMOR_TH) && (E3_5_gyro > GYRO_TREMOR_TH) &&
                 (dom_freq >= 3.0f && dom_freq <= 5.0f);
 
