@@ -4,7 +4,7 @@ Group Members:
 Hongxin Li
 Lingbo Li
 Ruihao Zhang
-Manish
+Manish Nadella
 Akhash Krishna 
 
 - Main project file:
